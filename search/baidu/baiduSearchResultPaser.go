@@ -1,5 +1,5 @@
 // 对百度搜索结果进行分析
-package search
+package baidu
 
 import (
 	"fmt"
@@ -18,7 +18,6 @@ var protocolPrefixes = []string{
 }
 
 func GetDomain(href string) (string, error) {
-
 	href = formatUrl(href)
 	domainUrl, err := url.Parse(href)
 	if err != nil {
@@ -54,6 +53,8 @@ type SearchResult struct {
 	BaiduDescriptionMatchWords []string `json:"baidu_description_match_words"` //百度显示的description的飘红字
 	BaiduDescription           string   `json:"baidu_description"`             // 百度显示的description
 	CacheUrl                   string   `json:"cache_url"`
+	IsEnterpriseCertificate    bool     `json:"is_enterprise_certificate"` // 是否企业实名认证
+	IsAd                       bool     `json:"is_ad"`                     // 是否是广告
 }
 
 func (sr *SearchResult) GetPCRealUrl() error {
@@ -184,6 +185,115 @@ func ParseBaiduPCSearchResultHtml(html string) (*[]SearchResult, error) {
 				resItem.CacheUrl = href
 			}
 		}
+
+		// 企业认证
+		enterpriseCertificateItem := searchResultElement.Find("span.c-icon-baozhang-new")
+		if len(enterpriseCertificateItem.Nodes) > 0 {
+			resItem.IsEnterpriseCertificate = true
+		}
+
+		results = append(results, resItem)
+	})
+
+	return &results, err
+}
+
+// 广告解析
+func ParseBaiduPCSearchAdResultHtml(html string) (*[]SearchResult, error) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil, err
+	}
+	var results []SearchResult
+
+	doc.Find("div#content_left div[data-click]").Each(func(index int, searchResultElement *goquery.Selection) {
+		resItem := SearchResult{Port: PcPort}
+
+		// 广告
+		if idStr := searchResultElement.AttrOr("id", ""); idStr == "" {
+			return
+		} else {
+			if idInt, err := strconv.Atoi(idStr); err != nil {
+				return
+			} else {
+
+				if idInt > 2000 {
+					resItem.IsAd = true
+				}
+
+				if idInt <= 2000 && idInt >= 1000 {
+					fmt.Println("-------------------------------------------------------------------")
+				}
+			}
+		}
+
+		// 如果不是ad，就不继续解析
+		if !resItem.IsAd {
+			return
+		}
+
+		// title相关
+		//fmt.Println(index)
+		var titleElement *goquery.Selection
+		searchResultElement.Find("h3.t>a").EachWithBreak(func(i int, te *goquery.Selection) bool {
+			if href, ok := te.Attr("href"); !ok || href == "" {
+				return false
+			}
+			titleElement = te
+			return false
+		})
+		if titleElement == nil {
+			return
+		}
+		baiduUrl, ok := titleElement.Attr("href")
+		if !ok {
+			return
+		} else {
+			resItem.Title = titleElement.Text()
+			titleElement.Find("font").Each(func(_ int, redElement *goquery.Selection) {
+				if redElement.Text() != "..." {
+					resItem.TitleMatchWords = append(resItem.TitleMatchWords, redElement.Text())
+				}
+			})
+			resItem.BaiduURL = baiduUrl
+		}
+
+		// description相关
+		searchResultElement.Find("a[hidefocus]").EachWithBreak(func(i int, selection *goquery.Selection) bool {
+			resItem.BaiduDescription = selection.Text()
+			if resItem.BaiduDescription == "" {
+				return true
+			}
+
+			selection.Find("font").Each(func(i int, fontSelection *goquery.Selection) {
+				resItem.BaiduDescriptionMatchWords = append(resItem.BaiduDescriptionMatchWords, fontSelection.Text())
+			})
+			return false
+		})
+
+		searchResultElement.Find("div a[target] span").EachWithBreak(func(i int, selection *goquery.Selection) bool {
+			if selection.Text() != "" {
+				resItem.DisplayUrl = selection.Text()
+				return false
+			}
+			return false
+		})
+
+		// cacheUrl
+		cacheUrlElem := searchResultElement.Find("div.f13 a.m")
+		if strings.Contains(cacheUrlElem.Text(), "百度快照") {
+			href, exist := cacheUrlElem.Attr("href")
+			if exist {
+				resItem.CacheUrl = href
+			}
+		}
+
+		// 企业认证
+		enterpriseCertificateItem := searchResultElement.Find("span.icons")
+		if len(enterpriseCertificateItem.Nodes) > 0 {
+			resItem.IsEnterpriseCertificate = true
+		}
+
 		results = append(results, resItem)
 	})
 
